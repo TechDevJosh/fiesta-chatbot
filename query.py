@@ -11,8 +11,7 @@ GROQ_MODEL = "llama3-70b-8192"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # --- Constants ---
-SIMILARITY_THRESHOLD = 0.3  # Lowered threshold slightly to catch more queries
-GREETING_WORDS = {"hello", "hi", "good day", "good morning", "good evening", "helo", "gandang araw", "magandang araw"}
+GREETING_WORDS = {"hello", "hi", "good day", "good morning", "good evening", "helo", "magandang araw"}
 
 # --- Load Knowledge Base ---
 try:
@@ -21,10 +20,13 @@ try:
     print(f"✅ Knowledge base with {len(knowledge_base)} chunks loaded successfully.")
 except FileNotFoundError:
     knowledge_base = []
-    print("⚠️ WARNING: vector_index.json not found. The bot will have no knowledge base.")
+    print("⚠️ WARNING: vector_index.json not found. Bot will have no knowledge base.")
 
 def find_best_context(question: str) -> str | None:
-    """Finds the most relevant context using simple keyword matching."""
+    """
+    Finds the most relevant context chunk using simple keyword matching.
+    This is a lightweight alternative that does not use an embedding model.
+    """
     if not knowledge_base:
         return None
 
@@ -34,26 +36,22 @@ def find_best_context(question: str) -> str | None:
 
     scored_chunks = []
     for item in knowledge_base:
-        text_words = set(item["text"].lower().split())
+        text_words = set(re.findall(r'\w+', item["text"].lower()))
         common_words = question_words.intersection(text_words)
         score = len(common_words)
         
-        # Give a bonus to chunks with important keywords
-        if any(kw in item["text"].lower() for kw in ["price", "financing", "model", " tripping", "process"]):
-            score += 1
+        if score > 0:
+            scored_chunks.append({"score": score, "text": item["text"]})
 
-        scored_chunks.append({"score": score, "text": item["text"]})
+    if not scored_chunks:
+        return None
 
+    # Sort chunks by score to find the best match
     scored_chunks.sort(key=lambda x: x["score"], reverse=True)
     
-    best_chunk = scored_chunks[0]
-    best_score_normalized = best_chunk["score"] / len(question_words) if len(question_words) > 0 else 0
-    
-    print(f"Top context match has a normalized score of: {best_score_normalized:.2f}")
+    # Return the text of the best matching chunk
+    return scored_chunks[0]["text"]
 
-    if best_score_normalized >= SIMILARITY_THRESHOLD and best_chunk["score"] > 0:
-        return best_chunk["text"]
-    return None
 
 def query_rag(question: str) -> str:
     """
@@ -62,11 +60,12 @@ def query_rag(question: str) -> str:
     print(f"Handling question: '{question}'")
     
     # 1. Handle Greetings
-    if any(greet in question.lower() for greet in GREETING_WORDS):
+    lower_question = question.lower()
+    if any(greet in lower_question for greet in GREETING_WORDS):
         print("✅ Detected a greeting.")
         return "Hello po! Welcome to Fiesta Communities. How can I assist you today?"
 
-    # 2. Attempt to find context
+    # 2. Attempt to find context using lightweight keyword search
     context = find_best_context(question)
     
     # 3. Build the prompt based on whether context was found
@@ -81,7 +80,7 @@ def query_rag(question: str) -> str:
     else:
         print("⚠️ No relevant context found. Using fallback.")
         system_prompt = (
-            "You are FiestaBot, a helpful and polite real estate assistant for Fiesta Communities. "
+            "You are FiestaBot, a helpful and polite real estate assistant. "
             "The user asked a question you don't have specific information for in your knowledge base. "
             "Politely state that you don't have the details for that specific query and offer to connect them with a human agent for assistance. "
             "Do not make up an answer."
@@ -105,7 +104,7 @@ def query_rag(question: str) -> str:
 
         print("🚀 Sending request to Groq...")
         response = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=20)
-        response.raise_for_status() # Raise an error for bad status codes
+        response.raise_for_status()
         
         answer = response.json()["choices"][0]["message"]["content"]
         print("✅ Received answer from Groq.")
