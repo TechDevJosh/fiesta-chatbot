@@ -1,25 +1,13 @@
 import os
 import json
 import numpy as np
-import torch
 from dotenv import load_dotenv
-from transformers import AutoTokenizer, AutoModel
 import requests
 
 load_dotenv()
 
-# Load model once
-MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModel.from_pretrained(MODEL_NAME)
-
-def mean_pooling(model_output, attention_mask):
-    token_embeddings = model_output[0]
-    input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size())
-    return (token_embeddings * input_mask_expanded).sum(1) / input_mask_expanded.sum(1)
-
 def embed(text):
-    # Dummy vector to avoid torch/transformers dependency in production
+    # Dummy embedding for deploy — replace with real model for local
     return [0.0] * 384
 
 def cosine_similarity(a, b):
@@ -40,8 +28,7 @@ def get_top_k_chunks(question, k=5):
         }
         for chunk in index
     ]
-    top_k = sorted(scored, key=lambda x: x["score"], reverse=True)[:k]
-    return top_k
+    return sorted(scored, key=lambda x: x["score"], reverse=True)[:k]
 
 def format_prompt(chunks, question):
     context = "\n\n---\n\n".join(c["text"] for c in chunks)
@@ -66,31 +53,23 @@ def ask_groq(prompt):
         "Content-Type": "application/json",
     }
     payload = {
-        "model": "llama3-70b-8192",  # ✅ updated model
+        "model": "llama3-70b-8192",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.2,
     }
 
     response = requests.post(url, headers=headers, json=payload)
-
-    # 🔍 Debug Groq response
-    print("🔍 Status:", response.status_code)
-    print("🔍 Body:", response.text)
-
     try:
         return response.json()["choices"][0]["message"]["content"]
     except Exception as e:
         return f"❌ Groq API error: {str(e)}"
 
-
 def query_bot(question):
     top_chunks = get_top_k_chunks(question)
     prompt = format_prompt(top_chunks, question)
-    answer = ask_groq(prompt)
-    return answer
+    return ask_groq(prompt)
 
 if __name__ == "__main__":
-    # ✅ Test run
     q = input("Ask a question: ")
     print("\n🤖 Answer:\n")
     print(query_bot(q))
