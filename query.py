@@ -10,62 +10,77 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = "llama3-70b-8192"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# --- Load Knowledge Base Text ---
+# --- Constants ---
+# We will only use context if its similarity score is above this value
+SIMILARITY_THRESHOLD = 0.5 
+
+# --- Load Knowledge Base ---
 print("Loading knowledge base text...")
 with open("vector_index.json", "r", encoding="utf-8") as f:
     knowledge_base = json.load(f)
 print(f"Knowledge base with {len(knowledge_base)} chunks loaded.")
 
 
-def find_best_context(question: str, top_k: int = 3) -> str:
+def find_best_context(question: str, top_k: int = 1) -> str | None:
     """
-    Finds the most relevant context chunks using simple keyword matching.
-    This is a lightweight alternative to vector similarity search.
+    Finds the most relevant context chunk if it's above a certain similarity threshold.
+    This uses a simple keyword scoring method.
     """
-    # Normalize and split the question into a set of unique words
     question_words = set(re.findall(r'\w+', question.lower()))
     
     if not question_words:
-        return "No relevant information found."
+        return None
 
     scored_chunks = []
     for item in knowledge_base:
-        text_words = set(re.findall(r'\w+', item["text"].lower()))
-        # Score based on the number of common words
+        text_words = set(item["text"].lower().split())
         common_words = question_words.intersection(text_words)
         score = len(common_words)
-        scored_chunks.append({"score": score, "text": item["text"], "source": item.get("source", "")})
+        scored_chunks.append({"score": score, "text": item["text"]})
 
-    # Sort chunks by score in descending order
     scored_chunks.sort(key=lambda x: x["score"], reverse=True)
     
-    # Filter out chunks with a score of 0 and get the top_k
-    top_chunks = [chunk["text"] for chunk in scored_chunks if chunk["score"] > 0][:top_k]
+    best_chunk = scored_chunks[0]
     
-    if not top_chunks:
-        return "No relevant information found."
-        
-    return "\n\n".join(top_chunks)
+    # Heuristic to decide if the match is good enough.
+    # If the question has 2 words, a score of 2 is a perfect match. A score of 1 is 50%.
+    best_score_normalized = best_chunk["score"] / len(question_words)
+    
+    print(f"Top context match has a normalized score of: {best_score_normalized:.2f}")
+
+    if best_score_normalized >= SIMILARITY_THRESHOLD:
+        return best_chunk["text"]
+    else:
+        # If the best match isn't good enough, don't use any context.
+        return None
 
 
 def query_rag(question: str) -> str:
     """
-    Performs lightweight RAG by finding context with keywords
-    and then querying the Groq AI for a final answer.
+    Handles user queries by first checking for relevant context,
+    then constructs a specific prompt for the Groq AI.
     """
-    print(f"Searching for context for question: '{question}'")
+    print(f"Handling question: '{question}'")
     context = find_best_context(question)
     
-    print(f"Found context: {context[:120]}...")
-
-    # Build the prompt for Groq
-    system_prompt = (
-        "You are FiestaBot, a helpful and polite assistant for Fiesta Communities. "
-        "Your tone should be friendly and use 'po' and 'opo' appropriately in a natural, conversational way. "
-        "Answer the user's question based ONLY on the context provided. "
-        "If the answer is not in the context, say: 'I'm sorry, I don't have that specific information right now, but I can have one of our property specialists get back to you shortly.'"
-    )
-    user_prompt = f"Context:\n{context}\n\nQuestion: {question}"
+    # The system prompt changes based on whether we found good context or not
+    if context:
+        print(f"Found relevant context: {context[:100]}...")
+        system_prompt = (
+            "You are FiestaBot, a helpful and polite assistant for Fiesta Communities. "
+            "Your tone should be friendly and use 'po' and 'opo' appropriately. "
+            "Answer the user's question based ONLY on the detailed context provided."
+        )
+        user_prompt = f"Context:\n{context}\n\nQuestion: {question}"
+    else:
+        print("No relevant context found. Handling as a general question.")
+        system_prompt = (
+            "You are FiestaBot, a friendly and polite assistant for Fiesta Communities. "
+            "Your tone should be friendly and use 'po' and 'opo' appropriately. "
+            "Answer the user's question conversationally. If asked about topics outside of real estate, politely decline. "
+            "If you are greeted, greet the user back."
+        )
+        user_prompt = question
 
     payload = {
         "model": GROQ_MODEL,
@@ -81,12 +96,9 @@ def query_rag(question: str) -> str:
     }
 
     print("Sending request to Groq...")
-    response = requests.post(GROQ_API_URL, headers=headers, json=payload)
+    response = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=20)
+    response.raise_for_status()
     
-    if response.status_code == 200:
-        answer = response.json()["choices"][0]["message"]["content"]
-        print("Received answer from Groq.")
-        return answer.strip()
-    else:
-        print(f"Error from Groq API: {response.text}")
-        return "I'm sorry, I'm having trouble connecting to my brain right now. Please try again in a moment."
+    answer = response.json()["choices"][0]["message"]["content"]
+    print("Received answer from Groq.")
+    return answer.strip()
