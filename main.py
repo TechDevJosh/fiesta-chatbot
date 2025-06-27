@@ -22,3 +22,7 @@ async def webhook(request: Request):
     data = await request.json()
     await handle_message(data)
     return JSONResponse(content={"status": "ok"})
+
+@app.get("/")
+def root():
+    return {"status": "Bot is alive"}
