@@ -3,57 +3,90 @@ import json
 import glob
 import re
 from dotenv import load_dotenv
-from transformers import AutoTokenizer, AutoModel
-import torch
-import numpy as np
-import requests
+from sentence_transformers import SentenceTransformer
 
+# --- Configuration ---
+# Load environment variables from .env file, if any
 load_dotenv()
-HF_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 
+# Specify the model we'll use for embeddings.
+# This is a high-performance model that is small and fast.
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModel.from_pretrained(MODEL_NAME)
 
-def mean_pooling(model_output, attention_mask):
-    token_embeddings = model_output[0]
-    input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size())
-    return (token_embeddings * input_mask_expanded).sum(1) / input_mask_expanded.sum(1)
+# Define the directory containing your knowledge base markdown files
+KB_DIR = "kb/"
 
-def embed_text(text):
-    encoded = tokenizer(text, padding=True, truncation=True, return_tensors="pt")
-    with torch.no_grad():
-        model_output = model(**encoded)
-    return mean_pooling(model_output, encoded['attention_mask']).squeeze().numpy()
+# --- Main Embedding Logic ---
 
-def chunk_markdown(text, max_chunk_length=300):
-    paragraphs = re.split(r'\n{2,}', text)
+def chunk_markdown(text: str, max_chunk_length: int = 500) -> list[str]:
+    """
+    Splits text from a markdown file into manageable chunks for embedding.
+    This version splits by paragraphs to maintain context.
+    """
+    # Normalize excessive newlines to a standard double newline for paragraph breaks
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    paragraphs = text.split('\n\n')
     chunks = []
-    current_chunk = ""
+
     for para in paragraphs:
-        if len(current_chunk) + len(para) <= max_chunk_length:
-            current_chunk += para + "\n\n"
-        else:
-            chunks.append(current_chunk.strip())
-            current_chunk = para + "\n\n"
-    if current_chunk:
-        chunks.append(current_chunk.strip())
+        # Clean up whitespace and ensure the paragraph has content
+        clean_para = para.strip()
+        if clean_para:
+            # If a paragraph is too long, we could split it further, but for now, we keep it whole
+            # to preserve context, as your documents are well-structured.
+            chunks.append(clean_para)
+
     return chunks
 
 def main():
-    index = []
-    for filepath in glob.glob("kb/*.md"):
+    """
+    Main function to run the embedding process.
+    """
+    print(f"Loading embedding model: {MODEL_NAME}...")
+    # Initialize the SentenceTransformer model.
+    # This will download the model (approx. 230MB) on the first run.
+    model = SentenceTransformer(MODEL_NAME)
+
+    index_data = []
+
+    # Find all markdown files in the specified knowledge base directory
+    markdown_files = glob.glob(os.path.join(KB_DIR, "*.md"))
+
+    if not markdown_files:
+        print(f"Error: No markdown files found in the '{KB_DIR}' directory.")
+        print("Please create the 'kb' folder and add your .md files to it.")
+        return
+
+    print(f"Found {len(markdown_files)} files to process in '{KB_DIR}' directory.")
+
+    for filepath in markdown_files:
         with open(filepath, "r", encoding="utf-8") as f:
-            text = f.read()
-            chunks = chunk_markdown(text)
-            for chunk in chunks:
-                embedding = embed_text(chunk).tolist()
-                index.append({"text": chunk, "embedding": embedding, "source": os.path.basename(filepath)})
+            content = f.read()
+            chunks = chunk_markdown(content)
 
-    with open("vector_index.json", "w", encoding="utf-8") as out:
-        json.dump(index, out, indent=2)
+            if not chunks:
+                continue
 
-    print(f"✅ {len(index)} chunks embedded and saved to vector_index.json")
+            print(f"  - Processing {os.path.basename(filepath)} ({len(chunks)} chunks)...")
+
+            # Generate embeddings for all chunks in the file at once for efficiency
+            embeddings = model.encode(chunks).tolist()
+
+            for i, chunk_text in enumerate(chunks):
+                # The key is "vector" to match what query.py will expect
+                index_data.append({
+                    "text": chunk_text,
+                    "vector": embeddings[i],
+                    "source": os.path.basename(filepath)
+                })
+
+    # Save the final index with real vectors to a JSON file
+    output_path = "vector_index.json"
+    with open(output_path, "w", encoding="utf-8") as out_file:
+        json.dump(index_data, out_file, indent=2)
+
+    print(f"\n✅ Success! {len(index_data)} chunks have been embedded with real vectors.")
+    print(f"Output saved to '{output_path}'.")
 
 if __name__ == "__main__":
     main()
