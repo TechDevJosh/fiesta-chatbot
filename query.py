@@ -1,68 +1,69 @@
 import json
-import numpy as np
 import requests
 import os
-from sentence_transformers import SentenceTransformer # This is ok for the function, as it's a small part.
+import re
 from dotenv import load_dotenv
 
+# --- Configuration ---
 load_dotenv()
-
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = "llama3-70b-8192"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# This part is now much lighter
-print("Loading vector index...")
+# --- Load Knowledge Base Text ---
+print("Loading knowledge base text...")
 with open("vector_index.json", "r", encoding="utf-8") as f:
-    vector_data = json.load(f)
-print("Vector index loaded.")
+    knowledge_base = json.load(f)
+print(f"Knowledge base with {len(knowledge_base)} chunks loaded.")
 
-# We will load the model once inside the function to manage memory
-embedding_model = None
 
-def get_embedding_model():
-    """Loads the model only when it's first needed."""
-    global embedding_model
-    if embedding_model is None:
-        print("Loading embedding model for the first time...")
-        embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-        print("Embedding model loaded.")
-    return embedding_model
-
-def cosine_similarity(a, b):
-    a = np.array(a)
-    b = np.array(b)
-    dot_product = np.dot(a, b)
-    norm_a = np.linalg.norm(a)
-    norm_b = np.linalg.norm(b)
-    return dot_product / (norm_a * norm_b)
-
-def query_rag(question: str, top_k: int = 3) -> str:
+def find_best_context(question: str, top_k: int = 3) -> str:
     """
-    Queries the knowledge base using a lightweight approach.
+    Finds the most relevant context chunks using simple keyword matching.
+    This is a lightweight alternative to vector similarity search.
     """
-    model = get_embedding_model()
+    # Normalize and split the question into a set of unique words
+    question_words = set(re.findall(r'\w+', question.lower()))
     
-    print(f"Embedding user query: '{question}'")
-    question_vector = model.encode(question).tolist()
+    if not question_words:
+        return "No relevant information found."
 
-    # Find top-k most similar chunks from the pre-computed index
     scored_chunks = []
-    for item in vector_data:
-        similarity = cosine_similarity(question_vector, item["vector"])
-        scored_chunks.append({"score": similarity, "text": item["text"]})
+    for item in knowledge_base:
+        text_words = set(re.findall(r'\w+', item["text"].lower()))
+        # Score based on the number of common words
+        common_words = question_words.intersection(text_words)
+        score = len(common_words)
+        scored_chunks.append({"score": score, "text": item["text"], "source": item.get("source", "")})
 
-    # Sort by score and get the best context
+    # Sort chunks by score in descending order
     scored_chunks.sort(key=lambda x: x["score"], reverse=True)
-    top_chunks = [chunk["text"] for chunk in scored_chunks[:top_k]]
-    context = "\n\n".join(top_chunks)
-    print(f"Found context with score: {scored_chunks[0]['score']:.2f}")
+    
+    # Filter out chunks with a score of 0 and get the top_k
+    top_chunks = [chunk["text"] for chunk in scored_chunks if chunk["score"] > 0][:top_k]
+    
+    if not top_chunks:
+        return "No relevant information found."
+        
+    return "\n\n".join(top_chunks)
+
+
+def query_rag(question: str) -> str:
+    """
+    Performs lightweight RAG by finding context with keywords
+    and then querying the Groq AI for a final answer.
+    """
+    print(f"Searching for context for question: '{question}'")
+    context = find_best_context(question)
+    
+    print(f"Found context: {context[:120]}...")
 
     # Build the prompt for Groq
     system_prompt = (
         "You are FiestaBot, a helpful and polite assistant for Fiesta Communities. "
-        "Answer the user's question based *only* on the context provided. "
-        "If the answer is not in the context, say 'I'm sorry, I don't have that information, but I can ask our team for you.'"
+        "Your tone should be friendly and use 'po' and 'opo' appropriately in a natural, conversational way. "
+        "Answer the user's question based ONLY on the context provided. "
+        "If the answer is not in the context, say: 'I'm sorry, I don't have that specific information right now, but I can have one of our property specialists get back to you shortly.'"
     )
     user_prompt = f"Context:\n{context}\n\nQuestion: {question}"
 
