@@ -1,7 +1,7 @@
 # main.py
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
-from rag_pipeline import get_answer
+from query import query_bot as get_answer
 from fastapi.middleware.cors import CORSMiddleware
 import hmac
 import hashlib
